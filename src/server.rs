@@ -7,7 +7,8 @@ use rocket::{Build, Rocket, State};
 
 use oso::{Oso, OsoError, PolarClass};
 
-use crate::models::{get_repos_by_name, Repository, User};
+use crate::db::Db;
+use crate::models::{Repository, User};
 
 #[catch(403)]
 fn not_authorized(_: &Request) -> String {
@@ -20,9 +21,13 @@ fn not_found(_: &Request) -> String {
 }
 
 #[get("/repo/<repo_name>")]
-fn get_repo(oso: &State<OsoState>, repo_name: String, user: User) -> Result<String, Status> {
-    let repository = get_repos_by_name(&repo_name);
-    println!("{:?}", user);
+fn get_repo(
+    oso: &State<OsoState>,
+    db: &State<Db>,
+    repo_name: String,
+    user: User,
+) -> Result<String, Status> {
+    let repository = db.get_repos_by_name(&repo_name);
     match oso.is_allowed(user, "read", repository) {
         true => Ok(format!("Welcome to repo {repo_name}")),
         false => Err(Status::Forbidden),
@@ -30,15 +35,19 @@ fn get_repo(oso: &State<OsoState>, repo_name: String, user: User) -> Result<Stri
 }
 
 #[get("/repo/<repo_name>/commit")]
-fn commit_repo(oso: &State<OsoState>, repo_name: String, user: User) -> Result<String, Status> {
-    let repository = get_repos_by_name(&repo_name);
+fn commit_repo(
+    oso: &State<OsoState>,
+    db: &State<Db>,
+    repo_name: String,
+    user: User,
+) -> Result<String, Status> {
+    let repository = db.get_repos_by_name(&repo_name);
 
     match oso.is_allowed(user, "commit", repository) {
         true => Ok(format!("Thank you for the commit on {repo_name}")),
         false => Err(Status::Forbidden),
     }
 }
-
 
 struct OsoState {
     oso: Arc<Mutex<Oso>>,
@@ -68,10 +77,12 @@ pub fn rocket(oso: Oso) -> Rocket<Build> {
     let oso_state = OsoState {
         oso: Arc::new(Mutex::new(oso)),
     };
+    let db = Db::new();
 
     rocket::build()
         .mount("/", routes![get_repo, commit_repo])
         .manage(oso_state)
+        .manage(db)
         .register("/", catchers![not_authorized, not_found])
 }
 
@@ -84,7 +95,7 @@ pub async fn run() -> Result<(), OsoError> {
 #[cfg(test)]
 mod test {
     use super::{oso, rocket};
-    use rocket::http::{Status, Cookie};
+    use rocket::http::{Cookie, Status};
     use rocket::local::blocking::Client;
 
     #[test]
@@ -104,7 +115,7 @@ mod test {
         let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
         let response = client
             .get("/repo/react")
-            .cookie(Cookie::new("name", "larry"))    
+            .cookie(Cookie::new("name", "larry"))
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
     }
@@ -115,21 +126,19 @@ mod test {
         let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
         let response = client
             .get("/repo/gmail/commit")
-            .cookie(Cookie::new("name", "larry"))    
+            .cookie(Cookie::new("name", "larry"))
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
     }
 
-     #[test]
+    #[test]
     fn commit_repo_forbidden() {
         let oso_client = oso().unwrap();
         let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
         let response = client
             .get("/repo/gmail/commit")
-            .cookie(Cookie::new("name", "graham"))    
+            .cookie(Cookie::new("name", "graham"))
             .dispatch();
         assert_eq!(response.status(), Status::Forbidden);
     }
-
-
 }
