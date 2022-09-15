@@ -121,6 +121,14 @@ mod test {
     }
 
     #[test]
+    fn get_repo_forbidden_if_no_cookie() {
+        let oso_client = oso().unwrap();
+        let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
+        let response = client.get("/repo/react").dispatch();
+        assert_eq!(response.status(), Status::Forbidden);
+    }
+
+    #[test]
     fn commit_repo_ok() {
         let oso_client = oso().unwrap();
         let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
