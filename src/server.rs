@@ -2,28 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use rocket::get;
 use rocket::http::Status;
-use rocket::request::{self, FromRequest, Request};
+use rocket::request::Request;
 use rocket::{Build, Rocket, State};
 
 use oso::{Oso, OsoError, PolarClass};
 
-use crate::expenses::{Expense, DB};
-
-#[derive(Debug)]
-struct User(String);
-
-#[rocket::async_trait]
-impl<'a> FromRequest<'a> for User {
-    type Error = String;
-
-    async fn from_request(request: &'a Request<'_>) -> request::Outcome<Self, Self::Error> {
-        if let Some(user) = request.headers().get_one("user") {
-            request::Outcome::Success(User(user.to_string()))
-        } else {
-            request::Outcome::Failure((Status::Forbidden, "Unknown User".to_owned()))
-        }
-    }
-}
+use crate::models::{get_repos_by_name, Repository, User};
 
 #[catch(403)]
 fn not_authorized(_: &Request) -> String {
@@ -35,25 +19,33 @@ fn not_found(_: &Request) -> String {
     "Not Found!\n".to_string()
 }
 
-#[get("/expenses/<id>")]
-fn get_expense(oso: &State<OsoState>, user: User, id: usize) -> Result<Option<String>, Status> {
-    if let Some(expense) = DB.get(&id) {
-        if oso.is_allowed(user.0, "GET", expense.clone()) {
-            Ok(Some(format!("{}\n", expense)))
-        } else {
-            Err(Status::Forbidden)
-        }
-    } else {
-        Ok(None)
+#[get("/repo/<repo_name>")]
+fn get_repo(oso: &State<OsoState>, repo_name: String, user: User) -> Result<String, Status> {
+    let repository = get_repos_by_name(&repo_name);
+    println!("{:?}", user);
+    match oso.is_allowed(user, "read", repository) {
+        true => Ok(format!("Welcome to repo {repo_name}")),
+        false => Err(Status::Forbidden),
     }
 }
+
+#[get("/repo/<repo_name>/commit")]
+fn commit_repo(oso: &State<OsoState>, repo_name: String, user: User) -> Result<String, Status> {
+    let repository = get_repos_by_name(&repo_name);
+
+    match oso.is_allowed(user, "commit", repository) {
+        true => Ok(format!("Thank you for the commit on {repo_name}")),
+        false => Err(Status::Forbidden),
+    }
+}
+
 
 struct OsoState {
     oso: Arc<Mutex<Oso>>,
 }
 
 impl OsoState {
-    pub fn is_allowed(&self, actor: String, action: &str, resource: Expense) -> bool {
+    pub fn is_allowed(&self, actor: User, action: &str, resource: Repository) -> bool {
         let guard = self.oso.lock().unwrap();
         guard
             .is_allowed(actor, action.to_string(), resource)
@@ -64,9 +56,10 @@ impl OsoState {
 pub fn oso() -> Result<Oso, OsoError> {
     let mut oso = Oso::new();
 
-    oso.register_class(Expense::get_polar_class())?;
+    oso.register_class(Repository::get_polar_class())?;
+    oso.register_class(User::get_polar_class())?;
 
-    oso.load_files(vec!["expenses.polar"])?;
+    oso.load_files(vec!["models.polar"])?;
 
     Ok(oso)
 }
@@ -77,7 +70,7 @@ pub fn rocket(oso: Oso) -> Rocket<Build> {
     };
 
     rocket::build()
-        .mount("/", routes![get_expense])
+        .mount("/", routes![get_repo, commit_repo])
         .manage(oso_state)
         .register("/", catchers![not_authorized, not_found])
 }
@@ -91,48 +84,52 @@ pub async fn run() -> Result<(), OsoError> {
 #[cfg(test)]
 mod test {
     use super::{oso, rocket};
-    use rocket::http::{Header, Status};
+    use rocket::http::{Status, Cookie};
     use rocket::local::blocking::Client;
 
     #[test]
-    fn get_expense_no_rules() {
-        let client = Client::tracked(rocket(oso().unwrap())).expect("valid rocket instance");
-        let response = client.get("/expenses/1").dispatch();
+    fn get_repo_forbidden() {
+        let oso_client = oso().unwrap();
+        let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
+        let response = client
+            .get("/repo/oso")
+            .cookie(Cookie::new("name", "larry"))
+            .dispatch();
         assert_eq!(response.status(), Status::Forbidden);
     }
 
     #[test]
-    fn get_expense_first_rule() {
-        let mut oso = oso().unwrap();
-        oso.load_str(
-            "allow(actor: String, \"GET\", _expense: Expense) if actor.ends_with(\"@example.com\");",
-        )
-        .unwrap();
-        let client = Client::tracked(rocket(oso)).expect("valid rocket instance");
-        let mut request = client.get("/expenses/1");
-        request.add_header(Header::new("user", "alice@example.com"));
-        let ok_response = request.dispatch();
-        assert_eq!(ok_response.status(), Status::Ok);
-        let unauthorized_response = client.get("/expenses/1").dispatch();
-        assert_eq!(unauthorized_response.status(), Status::Forbidden);
+    fn get_repo_ok() {
+        let oso_client = oso().unwrap();
+        let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
+        let response = client
+            .get("/repo/react")
+            .cookie(Cookie::new("name", "larry"))    
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
     }
 
     #[test]
-    fn get_expense_second_rule() {
-        let mut oso = oso().unwrap();
-        oso.load_str(
-            "allow(actor: String, \"GET\", expense: Expense) if expense.submitted_by = actor;",
-        )
-        .unwrap();
-        let client = Client::tracked(rocket(oso)).expect("valid rocket instance");
-        let mut request = client.get("/expenses/1");
-        request.add_header(Header::new("user", "alice@example.com"));
-        let ok_response = request.dispatch();
-        assert_eq!(ok_response.status(), Status::Ok);
-
-        let mut bad_request = client.get("/expenses/3");
-        bad_request.add_header(Header::new("user", "alice@example.com"));
-        let unauthorized_response = bad_request.dispatch();
-        assert_eq!(unauthorized_response.status(), Status::Forbidden);
+    fn commit_repo_ok() {
+        let oso_client = oso().unwrap();
+        let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
+        let response = client
+            .get("/repo/gmail/commit")
+            .cookie(Cookie::new("name", "larry"))    
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
     }
+
+     #[test]
+    fn commit_repo_forbidden() {
+        let oso_client = oso().unwrap();
+        let client = Client::tracked(rocket(oso_client)).expect("valid rocket instance");
+        let response = client
+            .get("/repo/gmail/commit")
+            .cookie(Cookie::new("name", "graham"))    
+            .dispatch();
+        assert_eq!(response.status(), Status::Forbidden);
+    }
+
+
 }

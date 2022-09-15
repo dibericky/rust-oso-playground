@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate rocket;
 
-mod expenses;
+mod models;
 mod server;
 
 #[tokio::main]
