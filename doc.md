@@ -1,6 +1,10 @@
 # RBAC
 
-Role Based Access Control (RBAC) achieve the authorization control by grouping permissions into roles.
+Role Based Access Control (RBAC) achieves the authorization control by grouping permissions into roles. 
+Actors (for instance a User) have a role assigned on resource instead of having permission directly. 
+
+First, we ask if the actor, having a specific role, can perform an action on a resource. Then, we check if that role has enough privilege to perform that action.
+
 
 Example:
 
@@ -15,16 +19,17 @@ Is Luca allowed to perform commit action on the resource Repository?
 This is translated in OSO as:
 
 ```rust
-let user = users.find("Luca");
+let actor = users.find("Luca");
+let action = "commit"
 let resource = repositories.find("my-repo");
-if oso.is_allowed(user, "commit", resource) {
+if oso.is_allowed(actor, action, resource) {
     Ok(())
 } else {
     Err("Not allowed")
 }
 ```
 
-`is_allowed(user, "commit", resource)` matches the following directive in our OSO rules:
+`oso.is_allowed(actor, action, resource)` matches the following directive in our OSO rules:
 
 ```
 allow(actor, action, resource) if
